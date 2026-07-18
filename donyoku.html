@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>オセロAI (貪欲法)</title>
+<style>
+    body {
+        font-family: sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        background-color: #f4f4f9;
+        margin-top: 30px;
+    }
+    /* 盤面のスタイル */
+    #board {
+        display: grid;
+        grid-template-columns: repeat(8, 50px);
+        grid-template-rows: repeat(8, 50px);
+        gap: 2px;
+        background-color: #333;
+        border: 2px solid #333;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+    /* 各マスのスタイル */
+    .cell {
+        background-color: #1b8a3b; /* オセロ盤の緑色 */
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        cursor: pointer;
+    }
+    .cell:hover {
+        filter: brightness(1.1);
+    }
+    /* 石のスタイル */
+    .stone {
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        box-shadow: 2px 2px 3px rgba(0,0,0,0.4);
+    }
+    .black { background-color: #111; }
+    .white { background-color: #eee; }
+    
+    #info {
+        margin-bottom: 15px;
+        font-size: 18px;
+        font-weight: bold;
+    }
+    button {
+        margin-top: 20px;
+        padding: 8px 16px;
+        font-size: 16px;
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        background-color: #333;
+        color: white;
+    }
+    button:hover { background-color: #555; }
+</style>
+</head>
+<body>
+
+<div id="info">黒(あなた)の番です</div>
+<div id="board"></div>
+<button onclick="initGame()">リセット</button>
+
+<script>
+    // 状態の定数
+    const EMPTY = 0, BLACK = 1, WHITE = 2;
+    // 8方向
+    const DIRECTIONS = [
+        [-1, -1], [-1, 0], [-1, 1],
+        [0, -1],           [0, 1],
+        [1, -1],  [1, 0],  [1, 1]
+    ];
+    
+    let board = [];
+    let currentPlayer = BLACK;
+    let isProcessing = false; // プレイヤーの連打・AI思考中のクリックを防ぐフラグ
+
+    const boardEl = document.getElementById('board');
+    const infoEl = document.getElementById('info');
+
+    // 盤面の初期化
+    function initGame() {
+        board = Array(8).fill(null).map(() => Array(8).fill(EMPTY));
+        board[3][3] = WHITE; board[3][4] = BLACK;
+        board[4][3] = BLACK; board[4][4] = WHITE;
+        currentPlayer = BLACK;
+        isProcessing = false;
+        drawBoard();
+        updateInfo();
+    }
+
+    // HTMLへの描画
+    function drawBoard() {
+        boardEl.innerHTML = '';
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.onclick = () => onCellClick(r, c);
+                
+                if (board[r][c] !== EMPTY) {
+                    const stone = document.createElement('div');
+                    stone.className = 'stone ' + (board[r][c] === BLACK ? 'black' : 'white');
+                    cell.appendChild(stone);
+                }
+                boardEl.appendChild(cell);
+            }
+        }
+    }
+
+    // 指定位置に置いた際に裏返る石のリストを取得 (Python版と同じロジック)
+    function getFlippedStones(r, c, player) {
+        if (board[r][c] !== EMPTY) return [];
+        const opponent = player === BLACK ? WHITE : BLACK;
+        const flipped = [];
+
+        for (const [dr, dc] of DIRECTIONS) {
+            let nr = r + dr, nc = c + dc;
+            const temp = [];
+            
+            while (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && board[nr][nc] === opponent) {
+                temp.push([nr, nc]);
+                nr += dr;
+                nc += dc;
+            }
+            
+            if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && board[nr][nc] === player) {
+                flipped.push(...temp);
+            }
+        }
+        return flipped;
+    }
+
+    // そのプレイヤーが置ける場所をすべて取得
+    function getValidMoves(player) {
+        const moves = [];
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                if (getFlippedStones(r, c, player).length > 0) {
+                    moves.push([r, c]);
+                }
+            }
+        }
+        return moves;
+    }
+
+    // 石を置き、裏返す処理
+    function placeStone(r, c, player) {
+        const flips = getFlippedStones(r, c, player);
+        board[r][c] = player;
+        for (const [fr, fc] of flips) {
+            board[fr][fc] = player;
+        }
+    }
+
+    // ターン切り替え処理
+    function nextTurn() {
+        currentPlayer = currentPlayer === BLACK ? WHITE : BLACK;
+        
+        // 置ける場所があるかチェック
+        const moves = getValidMoves(currentPlayer);
+        if (moves.length === 0) {
+            // パス処理
+            currentPlayer = currentPlayer === BLACK ? WHITE : BLACK;
+            // 相手も置けなければゲーム終了
+            if (getValidMoves(currentPlayer).length === 0) {
+                endGame();
+                return;
+            }
+            updateInfo("パスしました。");
+            setTimeout(() => processCurrentTurn(), 1000); // 1秒間パス表示を見せる
+            return;
+        }
+        
+        updateInfo();
+        processCurrentTurn();
+    }
+
+    // 現在のターンがAIならAIを動かす
+    function processCurrentTurn() {
+        if (currentPlayer === WHITE) {
+            isProcessing = true;
+            // AIが考えているような間を作る（500ミリ秒）
+            setTimeout(playAI, 500); 
+        } else {
+            isProcessing = false;
+        }
+    }
+
+    // プレイヤー(黒)がマスをクリックしたとき
+    function onCellClick(r, c) {
+        // AIの番、または置けない場所なら無視
+        if (isProcessing || currentPlayer !== BLACK) return;
+        
+        const flips = getFlippedStones(r, c, BLACK);
+        if (flips.length === 0) return; 
+        
+        placeStone(r, c, BLACK);
+        drawBoard();
+        nextTurn();
+    }
+
+    // ==========================================
+    // 貪欲法AIの実装 (Python版の翻訳)
+    // ==========================================
+    function playAI() {
+        let bestMove = null;
+        let maxFlips = 0;
+
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const flips = getFlippedStones(r, c, WHITE);
+                if (flips.length > maxFlips) {
+                    maxFlips = flips.length;
+                    bestMove = [r, c];
+                }
+            }
+        }
+
+        // 置ける場所が見つかれば打つ
+        if (bestMove) {
+            placeStone(bestMove[0], bestMove[1], WHITE);
+            drawBoard();
+        }
+        nextTurn();
+    }
+
+    // 画面のテキスト情報更新
+    function updateInfo(prefix = "") {
+        const bCount = board.flat().filter(s => s === BLACK).length;
+        const wCount = board.flat().filter(s => s === WHITE).length;
+        const turnStr = currentPlayer === BLACK ? "黒(あなた)の番" : "白(AI)の番";
+        infoEl.innerText = `${prefix} ${turnStr} (黒: ${bCount} 白: ${wCount})`;
+    }
+
+    // ゲーム終了判定と結果表示
+    function endGame() {
+        const bCount = board.flat().filter(s => s === BLACK).length;
+        const wCount = board.flat().filter(s => s === WHITE).length;
+        let msg = `ゲーム終了！ 黒: ${bCount} 白: ${wCount} で\n`;
+        if (bCount > wCount) msg += "あなたの勝ちです！";
+        else if (wCount > bCount) msg += "AIの勝ちです！";
+        else msg += "引き分けです！";
+        infoEl.innerText = msg;
+    }
+
+    // ゲーム開始
+    initGame();
+</script>
+</body>
+</html>
