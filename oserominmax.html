@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>オセロAI (MinMax法)</title>
+<style>
+    body {
+        font-family: sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        background-color: #f4f4f9;
+        margin-top: 30px;
+    }
+    #board {
+        display: grid;
+        grid-template-columns: repeat(8, 50px);
+        grid-template-rows: repeat(8, 50px);
+        gap: 2px;
+        background-color: #333;
+        border: 2px solid #333;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+    .cell {
+        background-color: #1b8a3b;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        cursor: pointer;
+    }
+    .cell:hover { filter: brightness(1.1); }
+    .stone {
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        box-shadow: 2px 2px 3px rgba(0,0,0,0.4);
+    }
+    .black { background-color: #111; }
+    .white { background-color: #eee; }
+    #info {
+        margin-bottom: 15px;
+        font-size: 18px;
+        font-weight: bold;
+    }
+    button {
+        margin-top: 20px;
+        padding: 8px 16px;
+        font-size: 16px;
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        background-color: #333;
+        color: white;
+    }
+    button:hover { background-color: #555; }
+</style>
+</head>
+<body>
+
+<div id="info">黒(あなた)の番です</div>
+<div id="board"></div>
+<button onclick="initGame()">リセット</button>
+
+<script>
+    const EMPTY = 0, BLACK = 1, WHITE = 2;
+    const DIRECTIONS = [
+        [-1, -1], [-1, 0], [-1, 1],
+        [0, -1],           [0, 1],
+        [1, -1],  [1, 0],  [1, 1]
+    ];
+
+    // 盤面の価値（重み付け）。角は高く、角の隣（危険地帯）はマイナス。
+    const EVAL_WEIGHTS = [
+        [ 30, -12,  0, -1, -1,  0, -12,  30],
+        [-12, -15, -3, -3, -3, -3, -15, -12],
+        [  0,  -3,  0, -1, -1,  0,  -3,   0],
+        [ -1,  -3, -1, -1, -1, -1,  -3,  -1],
+        [ -1,  -3, -1, -1, -1, -1,  -3,  -1],
+        [  0,  -3,  0, -1, -1,  0,  -3,   0],
+        [-12, -15, -3, -3, -3, -3, -15, -12],
+        [ 30, -12,  0, -1, -1,  0, -12,  30]
+    ];
+    
+    // AIの探索の深さ（大きくすると強くなるが遅くなる。3〜4がブラウザでは適正）
+    const SEARCH_DEPTH = 6; 
+
+    let mainBoard = [];
+    let currentPlayer = BLACK;
+    let isProcessing = false;
+
+    const boardEl = document.getElementById('board');
+    const infoEl = document.getElementById('info');
+
+    // ---------------------------------
+    // 基本的なゲームロジック
+    // ---------------------------------
+    function initGame() {
+        mainBoard = Array(8).fill(null).map(() => Array(8).fill(EMPTY));
+        mainBoard[3][3] = WHITE; mainBoard[3][4] = BLACK;
+        mainBoard[4][3] = BLACK; mainBoard[4][4] = WHITE;
+        currentPlayer = BLACK;
+        isProcessing = false;
+        drawBoard();
+        updateInfo();
+    }
+
+    function drawBoard() {
+        boardEl.innerHTML = '';
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.onclick = () => onCellClick(r, c);
+                
+                if (mainBoard[r][c] !== EMPTY) {
+                    const stone = document.createElement('div');
+                    stone.className = 'stone ' + (mainBoard[r][c] === BLACK ? 'black' : 'white');
+                    cell.appendChild(stone);
+                }
+                boardEl.appendChild(cell);
+            }
+        }
+    }
+
+    // 特定の盤面状態(b)において、置いた時に裏返る石を返す
+    function getFlippedStones(b, r, c, player) {
+        if (b[r][c] !== EMPTY) return [];
+        const opponent = player === BLACK ? WHITE : BLACK;
+        const flipped = [];
+
+        for (const [dr, dc] of DIRECTIONS) {
+            let nr = r + dr, nc = c + dc;
+            const temp = [];
+            while (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && b[nr][nc] === opponent) {
+                temp.push([nr, nc]);
+                nr += dr; nc += dc;
+            }
+            if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && b[nr][nc] === player) {
+                flipped.push(...temp);
+            }
+        }
+        return flipped;
+    }
+
+    // 特定の盤面状態(b)において、置ける場所をすべて返す
+    function getValidMoves(b, player) {
+        const moves = [];
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                if (getFlippedStones(b, r, c, player).length > 0) moves.push([r, c]);
+            }
+        }
+        return moves;
+    }
+
+    // 新しい盤面状態を生成して返す（シミュレーション用）
+    function getNextBoardState(b, r, c, player) {
+        const newBoard = b.map(row => [...row]); // ディープコピー
+        const flips = getFlippedStones(newBoard, r, c, player);
+        newBoard[r][c] = player;
+        for (const [fr, fc] of flips) {
+            newBoard[fr][fc] = player;
+        }
+        return newBoard;
+    }
+
+    function onCellClick(r, c) {
+        if (isProcessing || currentPlayer !== BLACK) return;
+        const flips = getFlippedStones(mainBoard, r, c, BLACK);
+        if (flips.length === 0) return; 
+        
+        mainBoard = getNextBoardState(mainBoard, r, c, BLACK);
+        drawBoard();
+        nextTurn();
+    }
+
+    function nextTurn() {
+        currentPlayer = currentPlayer === BLACK ? WHITE : BLACK;
+        const moves = getValidMoves(mainBoard, currentPlayer);
+        
+        if (moves.length === 0) {
+            currentPlayer = currentPlayer === BLACK ? WHITE : BLACK;
+            if (getValidMoves(mainBoard, currentPlayer).length === 0) {
+                endGame();
+                return;
+            }
+            updateInfo("パスしました。");
+            setTimeout(() => processCurrentTurn(), 1000);
+            return;
+        }
+        updateInfo();
+        processCurrentTurn();
+    }
+
+    function processCurrentTurn() {
+        if (currentPlayer === WHITE) {
+            isProcessing = true;
+            // 画面描画を更新してからAIに計算させるため setTimeout を使用
+            setTimeout(playMinMaxAI, 100); 
+        } else {
+            isProcessing = false;
+        }
+    }
+
+    // ---------------------------------
+    // MinMax法 AIの実装
+    // ---------------------------------
+
+    // 盤面を評価する関数（AI(白)にとってどれだけ有利かを数値化）
+    function evaluateBoard(b) {
+        let score = 0;
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                if (b[r][c] === WHITE) score += EVAL_WEIGHTS[r][c];
+                else if (b[r][c] === BLACK) score -= EVAL_WEIGHTS[r][c];
+            }
+        }
+        return score;
+    }
+
+    // 再帰的に数手先を読んで評価値を返す
+    function minimax(b, depth, isMaximizingPlayer, player) {
+        // 指定した深さに達したか、ゲーム終了の場合は現在の盤面評価を返す
+        if (depth === 0) return evaluateBoard(b);
+
+        const validMoves = getValidMoves(b, player);
+
+        // 置ける場所がない場合（パス）
+        if (validMoves.length === 0) {
+            const nextPlayer = player === BLACK ? WHITE : BLACK;
+            const nextMoves = getValidMoves(b, nextPlayer);
+            if (nextMoves.length === 0) {
+                // 完全終局。勝てば大きなプラス、負ければ大きなマイナス
+                const wCount = b.flat().filter(s => s === WHITE).length;
+                const bCount = b.flat().filter(s => s === BLACK).length;
+                return (wCount - bCount) * 1000;
+            } else {
+                // パスして相手の手番へ
+                return minimax(b, depth - 1, !isMaximizingPlayer, nextPlayer);
+            }
+        }
+
+        if (isMaximizingPlayer) {
+            // AI(白)のターン：評価を最大化したい
+            let maxEval = -Infinity;
+            for (const [r, c] of validMoves) {
+                const nextBoard = getNextBoardState(b, r, c, player);
+                const ev = minimax(nextBoard, depth - 1, false, BLACK);
+                maxEval = Math.max(maxEval, ev);
+            }
+            return maxEval;
+        } else {
+            // プレイヤー(黒)のターン：AIにとって最悪な(評価が最小になる)手を選んでくると想定する
+            let minEval = Infinity;
+            for (const [r, c] of validMoves) {
+                const nextBoard = getNextBoardState(b, r, c, player);
+                const ev = minimax(nextBoard, depth - 1, true, WHITE);
+                minEval = Math.min(minEval, ev);
+            }
+            return minEval;
+        }
+    }
+
+    // AIの手を決定する
+    function playMinMaxAI() {
+        const validMoves = getValidMoves(mainBoard, WHITE);
+        let bestMove = null;
+        let maxEval = -Infinity;
+
+        // 全ての合法手について、MinMax探索を行い最も評価が高くなる手を選ぶ
+        for (const [r, c] of validMoves) {
+            const nextBoard = getNextBoardState(mainBoard, r, c, WHITE);
+            // 次はプレイヤー(黒)の番なので isMaximizingPlayer = false, depthは -1 して開始
+            const ev = minimax(nextBoard, SEARCH_DEPTH - 1, false, BLACK);
+            
+            if (ev > maxEval) {
+                maxEval = ev;
+                bestMove = [r, c];
+            }
+        }
+
+        if (bestMove) {
+            mainBoard = getNextBoardState(mainBoard, bestMove[0], bestMove[1], WHITE);
+            drawBoard();
+        }
+        nextTurn();
+    }
+
+    // ---------------------------------
+    // UI更新処理
+    // ---------------------------------
+    function updateInfo(prefix = "") {
+        const bCount = mainBoard.flat().filter(s => s === BLACK).length;
+        const wCount = mainBoard.flat().filter(s => s === WHITE).length;
+        const turnStr = currentPlayer === BLACK ? "黒(あなた)の番" : "白(AI)が思考中...";
+        infoEl.innerText = `${prefix} ${turnStr} (黒: ${bCount} 白: ${wCount})`;
+    }
+
+    function endGame() {
+        const bCount = mainBoard.flat().filter(s => s === BLACK).length;
+        const wCount = mainBoard.flat().filter(s => s === WHITE).length;
+        let msg = `ゲーム終了！ 黒: ${bCount} 白: ${wCount} で\n`;
+        if (bCount > wCount) msg += "あなたの勝ちです！";
+        else if (wCount > bCount) msg += "AIの勝ちです！";
+        else msg += "引き分けです！";
+        infoEl.innerText = msg;
+    }
+
+    initGame();
+</script>
+</body>
+</html>
